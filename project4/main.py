@@ -1,8 +1,9 @@
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from utils import read_csv
 
 import pandas as pd
+import numpy as np
 import pulp as pl
 from pulp import LpProblem, LpMaximize, LpMinimize, LpVariable, LpStatus
 
@@ -171,46 +172,32 @@ def calculate_cross_efficiencies(
     return pd.DataFrame.from_dict(cross_efficiencies, orient="index", columns=airports)
 
 
-def calculate_dist(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_dist(
+    df: pd.DataFrame, samples: int = 100
+) -> Tuple[Dict[str, pd.Series], Dict[str, float]]:
     airports: List[str] = df.index.tolist()
-    i1 = LpVariable("i1", lowBound=0, cat="Continuous")
-    i2 = LpVariable("i2", lowBound=0, cat="Continuous")
-    i3 = LpVariable("i3", lowBound=0, cat="Continuous")
-    i4 = LpVariable("i4", lowBound=0, cat="Continuous")
-    o1 = LpVariable("o1", lowBound=0, cat="Continuous")
-    o2 = LpVariable("o2", lowBound=0, cat="Continuous")
-    b: Dict[str, LpVariable] = {
-        airport: LpVariable(airport, lowBound=0, upBound=1, cat="Integer")
-        for airport in airports
-    }
-    dist_weights: Dict[str, List[float]] = {}
+    random_weights: pd.DataFrame = pd.DataFrame(
+        np.random.rand(samples, 6), columns=["i1", "i2", "i3", "i4", "o1", "o2"]
+    )
+    dist: Dict[str, pd.Series] = {}
+    estimated: Dict[str, float] = {}
     for chosen_airport_name in airports:
-        problem = LpProblem("problem", LpMinimize)
         airport: pd.Series = df.loc[chosen_airport_name]
-        problem += airport["o1"] * o1 + airport["o2"] * o2, "Objective Function"
-        # Constraints
-        problem += (
-            airport["i1"] * i1
-            + airport["i2"] * i2
-            + airport["i3"] * i3
-            + airport["i4"] * i4
-            == 1,
-            "airport Constraint",
+        eff = (
+            random_weights.loc[:, "o1"] * airport["o1"]
+            + random_weights.loc[:, "o2"] * airport["o2"]
+        ) / (
+            random_weights.loc[:, "i1"] * airport["i1"]
+            + random_weights.loc[:, "i2"] * airport["i2"]
+            + random_weights.loc[:, "i3"] * airport["i3"]
+            + random_weights.loc[:, "i4"] * airport["i4"]
         )
-        for airport_name in airports:
-            problem += (
-                df.loc[airport_name, "o1"] * o1 + df.loc[airport_name, "o2"] * o2
-                >= df.loc[airport_name, "i1"] * i1
-                + df.loc[airport_name, "i2"] * i2
-                + df.loc[airport_name, "i3"] * i3
-                + df.loc[airport_name, "i4"] * i4
-                - 9999 * (1 - b.get(airport_name)),
-                f"{airport_name} Function",
-            )
-        problem += sum(b.values()) >= 1
-        problem.solve()
-        # print("Current Status: ", LpStatus[problem.status])
-    return pd.DataFrame()
+        rel_eff = eff / eff.max()
+        estimated[chosen_airport_name] = rel_eff.mean().round(3)
+        dist[chosen_airport_name] = (
+            pd.cut(rel_eff, bins=[0, 0.2, 0.4, 0.6, 0.8, 1.1]).value_counts() / samples
+        )
+    return dist, estimated
 
 
 def main():
@@ -221,16 +208,16 @@ def main():
     super_efficiencies: Dict[str, float] = calculate_efficiencies(df, True)
     hcu_df = calculate_hcu(df)
     cross_efficiencies_df = calculate_cross_efficiencies(df, efficiencies)
-    calculate_dist(df)
-    # print(efficiencies)
-    # print(super_efficiencies)
-    # print(hcu_df)
-    # print(df.loc[:, "i1":"i4"] - hcu_df)
-    # with pd.option_context(
-    #     "display.max_rows", None, "display.max_columns", None
-    # ):
-    #     print(cross_efficiencies_df.round(3))
-    # print(cross_efficiencies_df.mean(axis=0).round(3))
+    dist, estimated = calculate_dist(df)
+    print(efficiencies)
+    print(super_efficiencies)
+    print(hcu_df)
+    print(df.loc[:, "i1":"i4"] - hcu_df)
+    with pd.option_context("display.max_rows", None, "display.max_columns", None):
+        print(cross_efficiencies_df.round(3))
+    print(cross_efficiencies_df.mean(axis=0).round(3))
+    print(pd.DataFrame.from_dict(dist, orient="index"))
+    print(pd.Series(estimated).sort_values())
 
 
 if __name__ == "__main__":
